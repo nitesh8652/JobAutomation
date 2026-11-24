@@ -1,0 +1,53 @@
+# Copy to config/profile.yaml (`jobbot init` does this) and fill in.
+# Everything here may be typed into application forms - only put true facts.
+
+first_name: Your
+last_name: Name
+email: you@example.com
+phone: "+91 90000 00000"
+location: "Bengaluru, India"          # city, country
+linkedin: https://www.linkedin.com/in/your-handle
+github: https://github.com/your-handle
+website: ""                          # portfolio / personal site
+current_company: ""
+current_title: ""
+years_experience: 3
+summary: >
+  One or two lines about who you are professionally. Used by the cover-letter writer.
+
+resume_path: resumes/base_resume.pdf  # PDF uploaded to every form
+# resume_text_path: resumes/resume.txt  # optional plain-text version (better for the AI than PDF extraction)
+
+# Ticks "I agree to the privacy policy / data processing" checkboxes automatically.
+# Set false if you want every such form to come to you for review.
+auto_consent: true
+
+# Voluntary self-identification (gender, race, veteran, disability...): "decline" picks
+# "Prefer not to say / I don't wish to answer". Set to false to leave them for review.
+eeo_decline: true
+
+# Standard answers. `match` is a case-insensitive regex tested against the question label.
+# First match wins. These are used BEFORE the AI and are always considered confident.
+answers:
+  - match: "sponsor"
+    answer: "Yes"            # Will you now or in the future require visa sponsorship?
+  - match: "authori[sz]ed to work|legally (able|eligible) to work|right to work"
+    answer: "No"             # for US/EU jobs; remote-worldwide jobs usually don't ask
+  - match: "notice period|when can you start|earliest start"
+    answer: "30 days"
+  - match: "salary|compensation|pay expectation|expected ctc"
+    answer: "Open to discussion based on the role and total compensation"
+  - match: "how did you (hear|learn|find)|where did you (find|hear|learn)|^source$|referral source"
+    answer: "Company careers page"
+  - match: "time ?zone"
+    answer: "IST (UTC+5:30), flexible to overlap with US/EU hours"
+  - match: "relocat"
+    answer: "No"
+  - match: "pronoun"
+    answer: ""
+  - match: "previously (worked|been employed|employed)|ever (worked|been employed) (for|at|by)|worked at .* before"
+    answer: "No"
+  - match: "nationality|citizenship|passport country|country of citizenship"
+    answer: "India"
+  - match: "english proficiency|level of english"
+    answer: "Fluent"

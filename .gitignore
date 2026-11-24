@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+config/profile.yaml
+config/targets.yaml
+resumes/*
+!resumes/.gitkeep

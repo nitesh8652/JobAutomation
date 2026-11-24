@@ -1,0 +1,102 @@
+# Copy to config/targets.yaml (`jobbot init` does this) and edit.
+
+# ---- What you want -------------------------------------------------------
+# A job title must contain at least one include term and none of the exclude terms (case-insensitive).
+title_include: [engineer, developer, "software", backend, frontend, "full stack", fullstack, python, devops, sre, data,
+                "ai engineer", "applied ai", "machine learning", "ml engineer", genai, llm]
+title_exclude: [senior staff, principal, director, "vp ", head of, manager, intern, sales, recruiter, "account executive"]
+
+remote_only: true
+# Regexes tested against the job's location text (case-insensitive).
+# Dropped if any `location_exclude` matches, UNLESS `location_keep` also matches.
+location_exclude:
+  - '\b(us|usa|u\.s\.|united states|canada|north america|mexico|brazil|latam)\b'
+  - '\b(uk|united kingdom|germany|france|spain|netherlands|poland|eu|europe|emea)\b'
+# If 300/week is still short, add Indian cities here, e.g.
+#   location_keep: '\b(worldwide|anywhere|global|india|apac|asia|bengaluru|bangalore|hyderabad|pune|mumbai|chennai|gurgaon|noida)\b'
+location_keep: '\b(worldwide|anywhere|global|india|apac|asia)\b'
+posted_within_days: 21
+
+# ---- AI scoring / writing (OpenAI) ----------------------------------------
+llm:
+  model: gpt-4o-mini
+  min_score: 70          # 0-100 fit score needed to apply
+
+# ---- Pacing / safety limits ----------------------------------------------
+limits:
+  weekly_target: 300     # stop auto-applying once this many applications went out this week (Mon-Sun)
+  daily_cap: 45          # max form attempts (submitted + queued) per day; 300/week is ~43/day
+  per_company_30d: 3     # max applications to the same company in 30 days
+  delay_seconds: [30, 120]   # random wait between form attempts
+  headless: true
+
+# ATSes we fill and submit automatically. Everything else (recruitee, personio, every
+# aggregator) lands in `jobbot assist` with a cover letter, so nothing submits blind.
+# Promote one after `jobbot apply --dry-run` looks good on it:
+#   auto_apply_ats: [greenhouse, lever, ashby, workable, recruitee, personio]
+auto_apply_ats: [greenhouse, lever, ashby, workable]
+
+# ---- Job sources ------------------------------------------------------------
+remotive:
+  enabled: true
+  categories: [software-dev,AI Engineer]   # each category = 1 API call; Remotive asks for <= 4 calls/day
+  min_hours_between_fetches: 12
+arbeitnow:
+  enabled: true
+  max_pages: 3
+  remote_only: true
+  min_hours_between_fetches: 6
+remoteok:
+  enabled: true
+  min_hours_between_fetches: 6
+himalayas:
+  enabled: true
+  limit: 100
+  max_pages: 2
+  min_hours_between_fetches: 12
+jobicy:
+  enabled: true
+  count: 50
+  geo: anywhere
+  min_hours_between_fetches: 12
+weworkremotely:
+  enabled: true
+  min_hours_between_fetches: 6
+hn_hiring:
+  enabled: true
+  max_items: 150
+  min_hours_between_fetches: 168     # a new "Who is hiring" thread once a month
+adzuna:                              # free key: developer.adzuna.com -> ADZUNA_APP_ID / ADZUNA_APP_KEY in .env
+  enabled: true
+  country: in
+  what: [software engineer, backend engineer, ai engineer]
+  results_per_page: 50
+  max_pages: 1
+  max_days_old: 21
+  min_hours_between_fetches: 24
+jooble:                              # free key: jooble.org/api/about -> JOOBLE_KEY in .env
+  enabled: true
+  keywords: [software engineer, python developer]
+  location: India
+  min_hours_between_fetches: 24
+discovery:
+  enabled: true          # look up companies found on the aggregators on every supported ATS
+  max_companies_per_run: 60
+
+# Companies whose public ATS job boards are read directly. All of these were verified
+# to return live listings. Add your own:
+#   jobbot add-company https://jobs.lever.co/somecompany
+#   jobbot add-company greenhouse:somecompany
+companies:
+  greenhouse: [gitlab, cloudflare, elastic, mongodb, twilio, stripe, airbnb, coinbase, instacart,
+               reddit, discord, figma, vercel, datadog, brex, rippling, gusto, canonical,
+               algolia, duolingo, dropbox, asana, pinterest, lyft, robinhood, affirm, chime,
+               betterment, sofi, anthropic, scaleai, databricks, fivetran, flexport, mixpanel,
+               contentful, storyblok, sumup, bitpanda, assemblyai]
+  lever: [spotify, palantir, wealthfront, swile]
+  ashby: [ramp, linear, posthog, supabase, notion, openai, elevenlabs, perplexity,
+          docker, sentry, webflow, sanity, amplitude, deepgram, modal, harvey, plaid, pleo, qonto,
+          alan, adjoe, n8n, snowflake]
+  workable: []
+  recruitee: [channable]
+  personio: [personio]
