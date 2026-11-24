@@ -1,6 +1,7 @@
 """Job sources. Every fetcher returns normalised job dicts with the keys in db.JOB_COLS."""
-from . import (adzuna, arbeitnow, ashby, greenhouse, himalayas, hn_hiring, jobicy, jooble, lever,
-               personio, recruitee, remotive, remoteok, weworkremotely, workable)
+from . import (adzuna, arbeitnow, ashby, greenhouse, himalayas, hiringcafe, hn_hiring, jobicy,
+               jooble, lever, personio, recruitee, remotive, remoteok, wellfound,
+               weworkremotely, workable, ycombinator, ziprecruiter)
 
 # ATS boards that can be read directly by company slug: fetch_board(slug) -> list[dict] | None
 BOARDS = {
@@ -21,4 +22,8 @@ AGGREGATORS = {
     "hn_hiring": hn_hiring.fetch,
     "adzuna": adzuna.fetch,
     "jooble": jooble.fetch,
+    "hiringcafe": hiringcafe.fetch,
+    "wellfound": wellfound.fetch,
+    "ycombinator": ycombinator.fetch,
+    "ziprecruiter": ziprecruiter.fetch,
 }

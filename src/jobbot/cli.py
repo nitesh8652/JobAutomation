@@ -190,6 +190,11 @@ def cmd_run_daily(args) -> None:
         log.info("week so far: %s (%s)", summary, path)
 
 
+def cmd_ui(args) -> None:
+    from . import ui
+    ui.serve(host=args.host, port=args.port, open_browser=not args.no_open)
+
+
 # ---------------------------------------------------------------- parser
 
 def main(argv: list[str] | None = None) -> None:
@@ -235,6 +240,11 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("run-daily", help="fetch + match + apply (for Task Scheduler)")
     s.add_argument("--no-apply", action="store_true")
     s.set_defaults(fn=cmd_run_daily)
+    s = sub.add_parser("ui", help="open the local web UI")
+    s.add_argument("--host", default="127.0.0.1", help="bind address (default: 127.0.0.1)")
+    s.add_argument("--port", type=int, default=8765, help="port (default: 8765)")
+    s.add_argument("--no-open", action="store_true", help="don't open the browser")
+    s.set_defaults(fn=cmd_ui)
 
     for stream in (sys.stdout, sys.stderr):
         try:

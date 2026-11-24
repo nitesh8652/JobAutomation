@@ -58,16 +58,24 @@ def prefilter(job: dict, t: dict) -> str | None:
 SCORE_SYSTEM = """You are a strict, honest technical recruiter screening for a candidate.
 Score from 0 to 100 how strong a fit the CANDIDATE is for the JOB:
 - required skills and stack overlap, seniority / years of experience, domain;
-- location eligibility: the candidate lives where their profile says. If the job is only open to
-  people in specific countries/time zones the candidate is not in, set location_ok=false.
+- location eligibility rules (STRICT):
+    * If the job is REMOTE / work-from-home: candidate is eligible from anywhere in India. OK.
+    * If the job requires IN-OFFICE / on-site presence: eligible ONLY if the office is in Mumbai.
+      Any other city (Bangalore, Hyderabad, Pune, Delhi, Chennai, etc.) -> location_ok=false.
+    * If the job is only open to specific countries the candidate is not in -> location_ok=false.
+- salary: candidate expects 25-35 LPA. If the job's stated salary range is clearly below 20 LPA
+  or above 80 LPA, note it in the reason but do not disqualify on salary alone.
 Be conservative: 70+ means a recruiter would plausibly shortlist them.
-Return JSON: {"score": <int>, "location_ok": <bool>, "reason": "<max 25 words>"}"""
+Return JSON: {"score": <int>, "location_ok": <bool>, "reason": "<max 30 words>"}"""
 
 
 def score_job(job: dict) -> dict:
     prof = config.profile()
     user = (
-        f"CANDIDATE PROFILE\nLocation: {prof.get('location')}\nYears of experience: {prof.get('years_experience')}\n"
+        f"CANDIDATE PROFILE\nLocation: {prof.get('location')} (open to remote India-wide; "
+        f"open to office only in Mumbai)\n"
+        f"Years of experience: {prof.get('years_experience')}\n"
+        f"Expected salary: 25-35 LPA\n"
         f"Summary: {prof.get('summary', '')}\n\nRESUME\n{resume_text()[:8000]}\n\n"
         f"JOB\nTitle: {job['title']}\nCompany: {job['company']}\nLocation: {job['location']}\n"
         f"Description:\n{(job.get('description') or '')[:6000]}"

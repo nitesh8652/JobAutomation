@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 
 from . import config
@@ -31,6 +32,59 @@ _EMPTY = {"jobs": [], "applications": [], "companies": [], "probes": {},
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def as_text(value) -> str:
+    return "" if value is None else str(value)
+
+
+def timestamp(value) -> float:
+    """Sortable epoch for an ISO/RFC date or an epoch number (seconds or milliseconds)."""
+    if value is None or value == "" or isinstance(value, bool):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000.0 if number > 1e11 else number
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        number = float(text)
+    except ValueError:
+        pass
+    else:
+        return number / 1000.0 if number > 1e11 else number
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def score_value(value) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return -1
+
+
+def _normalise_ts(value):
+    """Store epoch timestamps as ISO strings so every source sorts the same way."""
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        number = number / 1000.0 if number > 1e11 else number
+        try:
+            return datetime.fromtimestamp(number, timezone.utc).isoformat(timespec="seconds")
+        except (OverflowError, OSError, ValueError):
+            return None
+    return str(value)
 
 
 class Store:
@@ -108,6 +162,7 @@ def upsert_job(store: Store, job: dict) -> bool:
         return False
     record = {key: job.get(key, default) for key, default in _JOB_DEFAULTS.items()}
     record["remote"] = 1 if job.get("remote") else 0
+    record["posted_at"] = _normalise_ts(job.get("posted_at"))
     record["fetched_at"] = now()
     record["id"] = store._next_id("jobs")
     store.data["jobs"].append(record)

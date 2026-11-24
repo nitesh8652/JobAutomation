@@ -79,6 +79,29 @@ jooble:                              # free key: jooble.org/api/about -> JOOBLE_
   keywords: [software engineer, python developer]
   location: India
   min_hours_between_fetches: 24
+hiringcafe:                          # browser scrape - Playwright required
+  enabled: true
+  keywords: [software engineer, backend engineer, python developer]
+  max_jobs: 100
+  headless: true
+  min_hours_between_fetches: 12
+wellfound:                           # browser scrape - Playwright required
+  enabled: true
+  roles: [software-engineer, backend-engineer, full-stack-engineer]
+  max_jobs: 100
+  headless: true
+  min_hours_between_fetches: 12
+ycombinator:                         # Work at a Startup - browser scrape - Playwright required
+  enabled: true
+  max_jobs: 100
+  headless: true
+  min_hours_between_fetches: 24
+ziprecruiter:                        # browser scrape - Playwright required
+  enabled: true
+  keywords: [software engineer, python developer, backend engineer]
+  max_jobs: 100
+  headless: true
+  min_hours_between_fetches: 12
 discovery:
   enabled: true          # look up companies found on the aggregators on every supported ATS
   max_companies_per_run: 60
