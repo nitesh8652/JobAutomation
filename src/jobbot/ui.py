@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -19,11 +20,12 @@ import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 import yaml
 
 from . import config, db, scheduler
+from .location import location_bucket
 
 log = logging.getLogger("jobbot.ui")
 
@@ -46,7 +48,7 @@ STATUS_MAP = {
 }
 
 DEFAULT_LIMITS = {
-    "weekly_target": 200, "daily_cap": 40, "per_company_30d": 3,
+    "weekly_target": 300, "daily_cap": 45, "per_company_30d": 3,
     "delay_seconds": [30, 120], "headless": True,
 }
 
@@ -232,6 +234,17 @@ class TaskManager:
 
 
 TASKS = TaskManager()
+_AGENT = None
+_AGENT_LOCK = threading.Lock()
+
+
+def browser_agent():
+    global _AGENT
+    with _AGENT_LOCK:
+        if _AGENT is None:
+            from .agent import BrowserJobAgent
+            _AGENT = BrowserJobAgent()
+        return _AGENT
 
 
 # -------------------------------------------------------------- task commands
@@ -331,10 +344,11 @@ def summary_payload() -> dict:
     with db.connect() as conn:
         try:
             out["week_applied"] = scheduler.applied_this_week(conn)
+            out["pending_verification"] = scheduler.pending_verification_this_week(conn)
             out["today_attempts"] = scheduler.attempts_today(conn)
             out["budget"] = scheduler.budget(conn)
         except (SystemExit, Exception):
-            out["week_applied"] = out["today_attempts"] = out["budget"] = 0
+            out["week_applied"] = out["pending_verification"] = out["today_attempts"] = out["budget"] = 0
         out["companies_active"] = db.count_companies(conn, active=1)
         out["counts"] = db.status_counts(conn)
         out["review_count"] = len(db.review_jobs(conn))
@@ -360,7 +374,10 @@ def jobs_payload(params: dict) -> dict:
         counts = db.status_counts(conn)
     atses = sorted({str(r.get("ats") or "other") for r in all_rows})
     rows = all_rows
-    if status != "all":
+    if status == "all":
+        rows = [r for r in rows if location_bucket(r, config.targets())
+                or r.get("status") in ("submitted", "applied_manual")]
+    else:
         rows = [r for r in rows if r.get("status") == status]
     if ats != "all":
         rows = [r for r in rows if r.get("ats") == ats]
@@ -405,6 +422,7 @@ def job_payload(job_id: int) -> dict | None:
 def review_payload() -> list[dict]:
     with db.connect() as conn:
         rows = db.review_jobs(conn)
+    rows = [r for r in rows if location_bucket(r, config.targets())]
     fields = ("id", "title", "company", "location", "ats", "url", "score", "status",
               "status_reason", "app_reason", "posted_at")
     return [{k: r.get(k) for k in fields} for r in rows]
@@ -412,7 +430,8 @@ def review_payload() -> list[dict]:
 
 def assist_payload(limit: int = 200) -> list[dict]:
     with db.connect() as conn:
-        rows = db.assist_jobs(conn, limit=limit)
+        rows = db.assist_jobs(conn, limit=10000)
+    rows = [r for r in rows if location_bucket(r, config.targets())][:limit]
     fields = ("id", "title", "company", "location", "ats", "url", "score", "score_reason",
               "status", "cover_letter", "posted_at")
     return [{k: r.get(k) for k in fields} for r in rows]
@@ -468,42 +487,228 @@ def save_config_payload(name: str, content: str) -> dict:
     return {"ok": True, "path": str(path)}
 
 
+_SKILL_ALIASES = {
+    "Python": ("python",), "JavaScript": ("javascript", "js"), "TypeScript": ("typescript", "ts"),
+    "Java": ("java",), "Go": ("golang", "go language"), "Rust": ("rust",),
+    "C++": ("c++", "cpp"), "C#": ("c#", "c sharp"), "Ruby": ("ruby",), "PHP": ("php",),
+    "React": ("react",), "Next.js": ("next.js", "nextjs"), "React Native": ("react native",),
+    "Vue": ("vue", "vue.js", "vuejs"), "Angular": ("angular",), "Node.js": ("node.js", "nodejs"),
+    "Express": ("express.js", "expressjs"), "Django": ("django",), "FastAPI": ("fastapi",),
+    "Flask": ("flask",), "Spring Boot": ("spring boot",), "SQL": ("sql",),
+    "PostgreSQL": ("postgresql", "postgres"), "MySQL": ("mysql",), "MongoDB": ("mongodb",),
+    "Redis": ("redis",), "Elasticsearch": ("elasticsearch", "opensearch"), "Kafka": ("kafka",),
+    "AWS": ("aws", "amazon web services"), "Google Cloud": ("gcp", "google cloud", "google cloud platform"),
+    "Azure": ("azure",), "Docker": ("docker",), "Kubernetes": ("kubernetes", "k8s"),
+    "Terraform": ("terraform",), "CI/CD": ("ci/cd", "continuous integration", "continuous delivery"),
+    "GitHub Actions": ("github actions",), "Linux": ("linux",), "Git": ("git",),
+    "System design": ("system design",), "Distributed systems": ("distributed systems",),
+    "Microservices": ("microservices",), "Event-driven systems": ("event-driven", "event driven"),
+    "REST APIs": ("rest api", "restful api"), "GraphQL": ("graphql",), "OAuth": ("oauth",),
+    "Automated testing": ("automated testing", "test automation"), "Pytest": ("pytest",),
+    "Jest": ("jest",), "Data structures": ("data structures",), "Algorithms": ("algorithms",),
+    "Machine learning": ("machine learning", "ml models"), "Deep learning": ("deep learning",),
+    "LLMs": ("llm", "large language model"), "RAG": ("rag", "retrieval augmented generation"),
+    "Prompt engineering": ("prompt engineering",), "LangChain": ("langchain",),
+    "Vector databases": ("vector database", "vector databases", "vector db"),
+    "Embeddings": ("embeddings", "embedding models"), "OpenAI API": ("openai api", "openai apis"),
+    "PyTorch": ("pytorch",), "TensorFlow": ("tensorflow",),
+    "scikit-learn": ("scikit-learn", "sklearn"), "Agile": ("agile",),
+}
+
+
 def skill_gaps_payload() -> dict:
-    """Analyse which skills appear most in scored jobs vs what the resume contains."""
+    """Count startup-relevant skills across in-scope job descriptions and compare with the resume."""
     import re as _re
     from .resume import resume_text
+    from .match import prefilter
 
-    SKILLS = [
-        "python", "javascript", "typescript", "java", "go", "rust", "c++", "c#", "ruby", "php",
-        "react", "vue", "angular", "node", "django", "fastapi", "flask", "spring",
-        "sql", "postgresql", "mysql", "mongodb", "redis", "elasticsearch",
-        "aws", "gcp", "azure", "docker", "kubernetes", "terraform", "ci/cd",
-        "system design", "distributed systems", "microservices", "rest api", "graphql",
-        "machine learning", "deep learning", "llm", "pytorch", "tensorflow",
-        "data structures", "algorithms", "linux", "git", "agile",
-    ]
+    resume_available = False
     try:
-        resume = resume_text().lower()
-    except Exception:
+        resume_text.cache_clear()
+        resume = resume_text()
+        resume_available = bool(resume.strip())
+    except (Exception, SystemExit):
         resume = ""
     with db.connect() as conn:
         all_jobs = db.jobs(conn)
-    scored = [j for j in all_jobs
-              if j.get("status") not in ("filtered", "closed", "duplicate") and j.get("description")]
-    total = max(len(scored), 1)
-    skill_counts: dict[str, int] = {}
-    for j in scored:
-        desc = (j.get("description") or "").lower()
-        for skill in SKILLS:
-            if _re.search(r"\b" + _re.escape(skill) + r"\b", desc):
-                skill_counts[skill] = skill_counts.get(skill, 0) + 1
+    targets = config.targets()
+    terminal = {"filtered", "closed", "duplicate", "skipped"}
+    eligible = [j for j in all_jobs if j.get("status") not in terminal
+                and j.get("description") and prefilter(j, targets) is None]
+    total = len(eligible)
+    patterns = {
+        skill: [_re.compile(r"(?<!\w)" + _re.escape(alias) + r"(?!\w)", _re.I) for alias in aliases]
+        for skill, aliases in _SKILL_ALIASES.items()
+    }
+    counts: dict[str, list[dict]] = {}
+    for job in eligible:
+        description = str(job.get("description") or "")
+        for skill, skill_patterns in patterns.items():
+            if any(pattern.search(description) for pattern in skill_patterns):
+                counts.setdefault(skill, []).append(job)
+
     gaps, present = [], []
-    for skill, count in sorted(skill_counts.items(), key=lambda x: -x[1]):
-        pct = round(count / total * 100)
-        in_resume = bool(_re.search(r"\b" + _re.escape(skill) + r"\b", resume))
-        entry = {"skill": skill, "jobs": count, "pct": pct, "in_resume": in_resume}
-        (present if in_resume else gaps).append(entry)
-    return {"gaps": gaps[:20], "present": present[:20], "total_jobs_analysed": total}
+    for skill, jobs in sorted(counts.items(), key=lambda item: (-len(item[1]), item[0].lower())):
+        in_resume = resume_available and any(
+            _re.search(r"(?<!\w)" + _re.escape(alias) + r"(?!\w)", resume, _re.I)
+            for alias in _SKILL_ALIASES[skill]
+        )
+        examples = [{"company": j.get("company") or "Unknown company", "title": j.get("title") or "Job"}
+                    for j in jobs[:3]]
+        entry = {"skill": skill, "jobs": len(jobs),
+                 "pct": round(len(jobs) / total * 100) if total else 0,
+                 "in_resume": in_resume, "examples": examples}
+        if resume_available:
+            (present if in_resume else gaps).append(entry)
+    return {"gaps": gaps[:25], "present": present[:25], "total_jobs_analysed": total,
+            "eligible_job_descriptions": total, "resume_available": resume_available,
+            "top_skills": [
+                {"skill": skill, "jobs": len(jobs),
+                 "pct": round(len(jobs) / total * 100) if total else 0,
+                 "examples": [{"company": j.get("company") or "Unknown company",
+                               "title": j.get("title") or "Job"} for j in jobs[:3]]}
+                for skill, jobs in sorted(counts.items(), key=lambda item: (-len(item[1]), item[0].lower()))[:25]
+            ]}
+
+
+def target_roles_payload() -> dict:
+    configured = config.targets().get("target_roles") or list(config.DEFAULT_TARGET_ROLES)
+    options = list(dict.fromkeys([*config.DEFAULT_TARGET_ROLES, *configured]))
+    return {"options": options, "selected": configured}
+
+
+def save_target_roles_payload(body: dict) -> dict:
+    roles = body.get("roles")
+    if not isinstance(roles, list):
+        raise ValueError("roles must be a list")
+    clean = list(dict.fromkeys(str(role).strip()[:100] for role in roles if str(role).strip()))
+    if not clean:
+        raise ValueError("select at least one target role")
+    if len(clean) > 40:
+        raise ValueError("select no more than 40 target roles")
+    config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    path = config.CONFIG_DIR / "target_roles.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    config.targets.cache_clear()
+    return target_roles_payload()
+
+
+def extension_skill_match_payload(description: str) -> dict:
+    from .resume import resume_text
+
+    text = str(description or "")[:20000]
+    if not text.strip():
+        raise ValueError("job description is required")
+    try:
+        resume_text.cache_clear()
+        resume = resume_text()
+    except (Exception, SystemExit):
+        resume = ""
+    found = []
+    in_resume = []
+    for skill, aliases in _SKILL_ALIASES.items():
+        if any(re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", text, re.I) for alias in aliases):
+            found.append(skill)
+            if resume and any(re.search(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", resume, re.I)
+                              for alias in aliases):
+                in_resume.append(skill)
+    gaps = [skill for skill in found if skill not in in_resume]
+    return {"resume_available": bool(resume.strip()), "job_skills": found,
+            "resume_skills_in_posting": in_resume, "not_found_in_resume": gaps,
+            "match_pct": round(len(in_resume) / len(found) * 100) if found else 0}
+
+
+def extension_searches_payload(query: str = "software engineer") -> dict:
+    """Search links for a user-operated job search; no sites are crawled by this endpoint."""
+    import re as _re
+
+    query = " ".join(str(query or "software engineer").split())[:120] or "software engineer"
+    q = quote_plus(query)
+    slug = _re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-") or "software-engineer"
+    hirist_slug = _re.sub(r"[^a-z0-9]+", "-", query.lower()).strip("-") or "software-engineer"
+    searches = [
+        {"site": "Naukri ? India", "url": f"https://www.naukri.com/{slug}-jobs-in-india"},
+        {"site": "Indeed ? India", "url": f"https://in.indeed.com/jobs?q={q}&l=India"},
+        {"site": "Wellfound", "url": f"https://wellfound.com/jobs?query={q}"},
+        {"site": "Y Combinator ? Work at a Startup", "url": f"https://www.workatastartup.com/jobs?query={q}"},
+        {"site": "Hirist.tech ? role search", "url": f"https://www.hirist.tech/k/{hirist_slug}-jobs"},
+    ]
+    automation = config.targets().get("automation") or {}
+    try:
+        max_tabs = max(2, min(6, int(automation.get("max_browser_tabs", 6))))
+    except (TypeError, ValueError):
+        max_tabs = 6
+    return {
+        "query": query,
+        "location_rule": "Remote roles: India only · On-site/hybrid roles: Mumbai only",
+        "max_browser_tabs": max_tabs,
+        "searches": searches[:max_tabs - 1],
+    }
+
+
+def applied_payload() -> dict:
+    """Return all confirmed submitted and manually-applied jobs, newest first."""
+    with db.connect() as conn:
+        rows = db.applications_with_jobs(conn, "")
+    rows = [r for r in rows if r.get("status") in ("submitted", "applied_manual")]
+    rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+    companies_by_key = {}
+    for row in rows:
+        company = str(row.get("company") or "Unknown company").strip()
+        companies_by_key.setdefault(company.casefold(), company)
+    companies = sorted(companies_by_key.values(), key=str.lower)
+    return {"applications": rows, "companies": companies, "total": len(rows)}
+
+
+def add_extension_job(body: dict) -> dict:
+    """Import one job only after the extension user explicitly requests it."""
+    from urllib.parse import urlsplit
+
+    from .location import location_bucket, location_rejection
+
+    url = str(body.get("url") or "").strip()
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("https", "http") or not parsed.hostname:
+        raise ValueError("job URL must be an http(s) URL")
+    host = parsed.hostname.lower().removeprefix("www.")
+    allowed = ("naukri.com", "indeed.com", "indeed.co.in", "wellfound.com",
+               "workatastartup.com", "hirist.tech")
+    if not any(host == domain or host.endswith("." + domain) for domain in allowed):
+        raise ValueError("open a job from Naukri, Indeed, Wellfound, Work at a Startup, or Hirist.tech")
+
+    email = str(body.get("hr_email") or "").strip()[:254]
+    if email and not re.fullmatch(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", email, re.I):
+        email = ""
+    job = {
+        "source": "browser_extension", "ats": "other", "company_slug": None, "ats_job_id": None,
+        "company": str(body.get("company") or "").strip()[:200] or "Unknown company",
+        "title": str(body.get("title") or "").strip()[:300],
+        "location": str(body.get("location") or "").strip()[:300],
+        "remote": 1 if body.get("remote") else 0, "url": url, "apply_url": url,
+        "description": str(body.get("description") or "")[:20000], "posted_at": None,
+        "hr_email": email or None,
+    }
+    if not job["title"]:
+        raise ValueError("job title is required")
+    targets = config.targets()
+    scope = location_bucket(job, targets)
+    if not scope:
+        raise ValueError(location_rejection(job, targets))
+    job["remote"] = 1 if scope == "remote_india" else 0
+
+    with db.connect() as conn:
+        created = db.upsert_job(conn, job)
+        row = db.get_job_by_url(conn, url)
+        if row and created:
+            db.set_job_status(conn, row["id"], "assist", "tracked from the browser extension")
+        conn.commit()
+    if not row:
+        raise ValueError("could not save this job")
+    return {"ok": True, "created": created,
+            "job": {"id": row["id"], "title": row.get("title"), "company": row.get("company"),
+                    "status": row.get("status")}}
 
 
 def report_payload() -> dict:
@@ -571,10 +776,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         self._route("POST")
 
+    def _trusted_post_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True  # local command-line clients may omit Origin
+        if origin.startswith("chrome-extension://"):
+            return True
+        parsed = urlparse(origin)
+        try:
+            server_port = int(self.server.server_address[1])
+            origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except (TypeError, ValueError):
+            return False
+        return (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1")
+                and origin_port == server_port)
+
     def _route(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         try:
+            if method == "POST" and not self._trusted_post_origin():
+                return self._error(403, "cross-origin request blocked")
             if path.startswith("/api/"):
                 self._api(method, path, parse_qs(parsed.query))
             else:
@@ -594,6 +816,8 @@ class Handler(BaseHTTPRequestHandler):
         rest = parts[2:]
 
         if method == "GET":
+            if name == "agent":
+                return self._json(browser_agent().snapshot())
             if name == "summary":
                 return self._json(summary_payload())
             if name == "jobs" and not rest:
@@ -610,10 +834,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(companies_payload())
             if name == "config":
                 return self._json(config_payload())
+            if name == "roles":
+                return self._json(target_roles_payload())
             if name == "report":
                 return self._json(report_payload())
             if name == "skill-gaps":
                 return self._json(skill_gaps_payload())
+            if name == "applied":
+                return self._json(applied_payload())
+            if name == "extension" and rest and rest[0] == "searches":
+                query_text = (query.get("q") or ["software engineer"])[0]
+                return self._json(extension_searches_payload(query_text))
+            if name == "extension" and rest and rest[0] == "roles":
+                return self._json(target_roles_payload())
+            if name == "extension" and rest and rest[0] == "applied":
+                return self._json(applied_payload())
             if name == "log":
                 tail = _as_int((query.get("tail") or ["300"])[0], 300, 10, 2000)
                 try:
@@ -638,12 +873,28 @@ class Handler(BaseHTTPRequestHandler):
 
         if method == "POST":
             body = self._body()
+            if name == "agent" and rest == ["start"]:
+                return self._json(browser_agent().start(body.get("role")), status=202)
+            if name == "agent" and rest == ["pause"]:
+                return self._json(browser_agent().pause())
+            if name == "agent" and rest == ["resume"]:
+                return self._json(browser_agent().resume())
+            if name == "agent" and rest == ["stop"]:
+                return self._json(browser_agent().stop())
+            if name == "agent" and rest == ["emergency-stop"]:
+                return self._json(browser_agent().stop(emergency=True))
             if name == "jobs" and rest and rest[-1] == "mark":
                 job_id = _as_int(rest[0], 0, 0)
                 status = str(body.get("status") or "")
                 return self._mark(job_id, status)
             if name == "jobs" and rest and rest[-1] == "cover-letter":
                 return self._save_cover(_as_int(rest[0], 0, 0), str(body.get("content") or ""))
+            if name == "extension" and rest == ["jobs"]:
+                return self._json(add_extension_job(body), status=201)
+            if name == "extension" and rest == ["skills"]:
+                return self._json(extension_skill_match_payload(str(body.get("description") or "")))
+            if name == "roles":
+                return self._json(save_target_roles_payload(body))
             if name == "tasks":
                 if rest and rest[-1] == "stop":
                     ok = TASKS.stop(_as_int(rest[0], 0, 0))

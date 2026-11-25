@@ -5,5 +5,11 @@ __pycache__/
 data/
 config/profile.yaml
 config/targets.yaml
+config/target_roles.json
 resumes/*
 !resumes/.gitkeep
+
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+*.xlsx

@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from .. import config, db, tailor
@@ -43,17 +42,39 @@ def greenhouse_embed_url(job: dict) -> str:
 
 
 class Applier:
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, context=None, persistent: bool = False):
         from playwright.sync_api import sync_playwright
-        self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.launch(headless=headless)
-        self.context = self.browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US")
+        self._owns_context = context is None
+        self._pw = sync_playwright().start() if self._owns_context else None
+        if context is not None:
+            self.context = context
+            self.browser = context.browser
+        elif persistent:
+            try:
+                self.context = self._pw.chromium.launch_persistent_context(
+                    user_data_dir=str(config.BROWSER_PROFILE_DIR), channel="chrome", headless=headless,
+                    viewport={"width": 1280, "height": 900}, locale="en-US",
+                )
+            except Exception:
+                self._pw.stop()
+                raise
+            self.browser = self.context.browser
+        else:
+            try:
+                self.browser = self._pw.chromium.launch(headless=headless)
+                self.context = self.browser.new_context(
+                    viewport={"width": 1280, "height": 900}, locale="en-US",
+                )
+            except Exception:
+                self._pw.stop()
+                raise
         self.context.set_default_timeout(15000)
 
     def close(self) -> None:
+        if not self._owns_context:
+            return
         try:
             self.context.close()
-            self.browser.close()
         finally:
             self._pw.stop()
 
@@ -121,15 +142,26 @@ class Applier:
         return True
 
     # ------------------------------------------------------------------
-    def apply(self, conn, job: dict, mode: str = "auto") -> Outcome:
+    def apply(self, conn, job: dict, mode: str = "auto", control=None) -> Outcome:
         """mode: 'auto' (submit if safe), 'dry' (fill, never submit), 'interactive' (fill, leave page open)."""
         if job["ats"] not in SUPPORTED:
             return Outcome("failed", f"unsupported ATS {job['ats']}")
-        page = self.context.new_page()
+        page = None
+        reused_blank_page = False
+        if not self._owns_context:
+            for candidate in self.context.pages:
+                if candidate.url == "about:blank" and not candidate.is_closed():
+                    page = candidate
+                    reused_blank_page = True
+                    break
+        if page is None:
+            page = self.context.new_page()
         keep_open = mode == "interactive"
         try:
             if not self.open_form(page, job):
                 return Outcome("closed", "posting is closed or missing")
+            if control and hasattr(control, "browser_page"):
+                control.browser_page(job, page, "reading application form")
             questions = formfill.analyze(page)
             if not any(q.kind == "file" for q in questions) and not any("mail" in (q.label or "").lower() for q in questions):
                 return Outcome("failed", "application form not found on page",
@@ -152,6 +184,8 @@ class Applier:
                        "labels": {q.key: q.label for q in questions}}
             captcha = formfill.detect_captcha(page)
             shot = self._screenshot(page, job["id"], "filled")
+            if control and hasattr(control, "browser_page"):
+                control.browser_page(job, page, "form filled; validating answers")
             needs = []
             if unresolved:
                 needs.append("needs answers: " + "; ".join(u[:80] for u in unresolved[:6]))
@@ -165,6 +199,9 @@ class Applier:
                 return Outcome("filled", reason, shot, answers, cover, page=page)
             if needs:
                 return Outcome("queued", reason, shot, answers, cover)
+
+            if control and not control.checkpoint("before_submit"):
+                return Outcome("queued", "stopped before submission", shot, answers, cover)
 
             if not formfill.click_submit(page):
                 return Outcome("queued", "submit button not found", shot, answers, cover)
@@ -183,8 +220,16 @@ class Applier:
             return Outcome("failed", f"{type(exc).__name__}: {exc}"[:300],
                            screenshot=self._screenshot(page, job["id"], "error"))
         finally:
+            if control and hasattr(control, "browser_page_done"):
+                control.browser_page_done()
             if not keep_open:
-                page.close()
+                if reused_blank_page and not page.is_closed():
+                    try:
+                        page.goto("about:blank", wait_until="domcontentloaded", timeout=5000)
+                    except Exception:
+                        page.close()
+                else:
+                    page.close()
 
 
 def record(conn, job_id: int, out: Outcome) -> None:

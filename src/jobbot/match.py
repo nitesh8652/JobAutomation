@@ -2,16 +2,26 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime, timedelta, timezone
 
 from . import config, db, llm
+from .location import location_rejection
 from .resume import resume_text
 from .text import norm
 
 log = logging.getLogger(__name__)
 
 APPLY_ATS = ("greenhouse", "lever", "ashby", "workable")
+
+ROLE_TITLE_TERMS = {
+    "software engineer": ("software engineer", "software developer", "software development engineer", "sde"),
+    "backend engineer": ("backend", "back-end", "server-side", "server side"),
+    "applied ai engineer": ("applied ai", "ai engineer", "genai engineer", "llm engineer", "applied machine learning"),
+    "forward deployed engineer": ("forward deployed", "forward-deployed", "forward deploy engineer"),
+    "full-stack web developer": ("full stack", "full-stack", "fullstack", "web developer"),
+    "automation engineer": ("automation engineer", "test automation", "qa automation", "rpa developer"),
+    "automation specialist": ("automation specialist", "workflow automation", "automation consultant"),
+}
 
 
 def apply_ats(t: dict) -> tuple[str, ...]:
@@ -34,20 +44,24 @@ def prefilter(job: dict, t: dict) -> str | None:
     title = (job.get("title") or "").lower()
     if not title:
         return "no title"
-    inc = [s.lower() for s in t.get("title_include") or []]
-    if inc and not any(s in title for s in inc):
-        return "title not in include list"
+    roles = [str(role).strip() for role in t.get("target_roles") or [] if str(role).strip()]
+    if roles:
+        terms = []
+        for role in roles:
+            terms.extend(ROLE_TITLE_TERMS.get(role.casefold(), (role.casefold(),)))
+        import re
+        if not any(re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", title, re.I) for term in terms):
+            return "title does not match selected target roles"
+    else:
+        inc = [s.lower() for s in t.get("title_include") or []]
+        if inc and not any(s in title for s in inc):
+            return "title not in include list"
     for s in t.get("title_exclude") or []:
         if s.lower() in title:
             return f"title excluded ({s.strip()})"
-    loc = (job.get("location") or "").lower()
-    if t.get("remote_only") and not job.get("remote") and "remote" not in loc and "remote" not in title:
-        return "not remote"
-    keep = t.get("location_keep")
-    if not (keep and re.search(keep, loc, re.I)):
-        for pat in t.get("location_exclude") or []:
-            if re.search(pat, loc, re.I):
-                return f"location excluded ({job.get('location')})"
+    location_reason = location_rejection(job, t)
+    if location_reason:
+        return location_reason
     days = t.get("posted_within_days")
     posted = _parse_date(job.get("posted_at"))
     if days and posted and posted < datetime.now(timezone.utc) - timedelta(days=int(days)):

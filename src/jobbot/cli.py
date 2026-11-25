@@ -76,23 +76,28 @@ def cmd_assist(args) -> None:
 def cmd_add_job(args) -> None:
     from .sources import BOARDS
     from .sources.ats_detect import detect, scan_career_page
+    from .location import location_bucket, location_rejection
     d = detect(args.url)
     with db.connect() as conn:
         if d.ats in BOARDS and d.slug:
             db.add_company(conn, d.ats, d.slug, args.company)
             jobs = BOARDS[d.ats](d.slug) or []
             for j in jobs:
+                if not location_bucket(j, config.targets()):
+                    continue
                 if args.company:
                     j["company"] = args.company
                 db.upsert_job(conn, j)
             db.set_company_last_fetched(conn, d.ats, d.slug)
             if d.job_id:
                 row = db.get_job_by_ats(conn, d.ats, d.slug, d.job_id)
-                if row:
+                if row and location_bucket(row, config.targets()):
                     db.set_job_status(conn, row["id"], "matched", "added by you")
                     print(f"#{row['id']} {row['title']} queued for applying ({d.ats})")
+                elif row:
+                    print(f"Job id is outside India/Mumbai scope: {location_rejection(row, config.targets())}")
                 else:
-                    print("Job id not on the public board (closed?). Company board added.")
+                    print("Job id not on the public board or outside India/Mumbai scope. Company board added.")
             else:
                 print(f"Added {d.ats}:{d.slug} board with {len(jobs)} listings.")
             conn.commit()
@@ -110,6 +115,10 @@ def cmd_add_job(args) -> None:
                "company": args.company or "?", "title": args.title or "?", "location": args.location or "",
                "remote": 0, "url": args.url, "apply_url": args.url, "description": args.desc or "",
                "posted_at": db.now()}
+        reason = location_rejection(job, config.targets())
+        if reason:
+            print(f"Not tracked: {reason}. Remote roles must confirm India; office/hybrid roles must be in Mumbai.")
+            return
         if not db.upsert_job(conn, job):
             print("Already tracked.")
             return
@@ -184,8 +193,11 @@ def cmd_run_daily(args) -> None:
     with db.connect() as conn:
         log.info("fetch: %s", fetch.run(conn))
         log.info("match: %s", match.run(conn))
-        if not args.no_apply:
-            log.info("apply: %s", apply.run_auto(conn))
+        automation = config.targets().get("automation") or {}
+        if not args.no_apply and automation.get("auto_submit_authorized") is True:
+            log.info("apply: %s", apply.run_auto(conn, headless=False))
+        elif not args.no_apply:
+            log.info("automatic submission is disabled; review dry-run forms and explicitly authorize in targets.yaml")
         summary, path = report.weekly(conn)
         log.info("week so far: %s (%s)", summary, path)
 

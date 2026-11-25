@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Jobbot</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <strong>Jobbot</strong>
+      <span>India · Mumbai</span>
+    </header>
+    <p class="scope">Remote: India only. On-site or hybrid: Mumbai only.</p>
+
+    <label for="role-select">Target role</label>
+    <select id="role-select"></select>
+    <button id="start" class="primary" disabled>Start Applying</button>
+    <button id="dashboard" class="quiet">Open Jobbot dashboard</button>
+
+    <section class="agent-panel">
+      <div class="row"><h2>Browser agent</h2><strong id="agent-state">Idle</strong></div>
+      <p id="agent-stage" class="hint">Start opens user-operated job searches and runs eligible ATS forms in a separate visible Chrome profile.</p>
+      <p id="agent-tabs" class="hint">Current application tab: idle.</p>
+      <div class="agent-controls">
+        <button id="agent-pause">Pause</button>
+        <button id="agent-resume">Resume</button>
+        <button id="agent-stop">Stop</button>
+        <button id="agent-emergency" class="danger">Emergency stop</button>
+      </div>
+      <pre id="agent-log" class="agent-log"></pre>
+    </section>
+
+    <section>
+      <h2>Track an application</h2>
+      <p class="hint">Open one job page, capture it, then review the details before tracking.</p>
+      <button id="capture">Capture current job page</button>
+      <div id="job-form" hidden>
+        <label for="job-title">Job title</label>
+        <input id="job-title" maxlength="300">
+        <label for="company">Company</label>
+        <input id="company" maxlength="200">
+        <label for="location">Location</label>
+        <input id="location" maxlength="300" placeholder="Remote, India or Mumbai">
+        <label class="check"><input id="remote" type="checkbox"> Remote work is offered</label>
+        <p class="hint">For remote jobs, the location must confirm India or an Indian city.</p>
+        <label for="job-url">Job page URL</label>
+        <input id="job-url" readonly>
+        <label for="hr-email">HR/contact email (if found)</label>
+        <input id="hr-email" maxlength="254" placeholder="No email found">
+        <label for="description">Description</label>
+        <textarea id="description" rows="5" maxlength="20000"></textarea>
+        <div id="skill-results" class="skill-results" hidden>
+          <h3>Resume skill match</h3>
+          <p id="skill-summary" class="hint"></p>
+          <div class="skill-group"><b>Found in both</b><span id="resume-skill-list" class="skill-list"></span></div>
+          <div class="skill-group"><b>In job, not found in resume text</b><span id="missing-skill-list" class="skill-list"></span></div>
+          <div class="skill-copy">
+            <button id="copy-resume-skills">Copy matched skills</button>
+            <button id="copy-missing-skills">Copy terms to review</button>
+          </div>
+          <p class="hint">Check the terms before adding them to your Naukri or Indeed profile.</p>
+        </div>
+        <button id="track" class="primary">Track this India/Mumbai job</button>
+      </div>
+      <div id="tracked" hidden>
+        <p id="tracked-label"></p>
+        <button id="mark-applied">Mark applied</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="row">
+      <h2>Recent applications</h2>
+        <button id="refresh-applied" class="link">Refresh</button>
+      </div>
+      <ul id="applied-list"><li class="hint">No applications recorded yet.</li></ul>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+    <footer>Jobbot fills and submits supported ATS forms only when explicitly enabled. Job-board applications stay user-operated.</footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -15,19 +15,37 @@ from pathlib import Path
 from . import config
 
 JOB_COLS = ("source", "ats", "company_slug", "ats_job_id", "company", "title", "location",
-            "remote", "url", "apply_url", "description", "posted_at")
+            "remote", "url", "apply_url", "description", "posted_at", "hr_email")
 
 APP_FIELDS = ("cover_letter", "answers_json", "screenshot")
 
 _JOB_DEFAULTS = {
     "source": None, "ats": "other", "company_slug": None, "ats_job_id": None, "company": None,
     "title": None, "location": None, "remote": 0, "url": None, "apply_url": None,
-    "description": None, "posted_at": None, "fetched_at": None, "status": "new",
+    "description": None, "posted_at": None, "hr_email": None, "fetched_at": None, "status": "new",
     "status_reason": None, "score": None, "score_reason": None,
 }
 
 _EMPTY = {"jobs": [], "applications": [], "companies": [], "probes": {},
           "meta": {}, "seq": {"jobs": 0, "applications": 0}}
+
+
+def _extract_hr_email(description: str) -> str | None:
+    import re
+
+    hints = ("hr", "human resources", "recruit", "talent", "hiring", "career", "jobs", "apply")
+    ranked = []
+    for match in re.finditer(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", description, re.I):
+        email = match.group(0)
+        lowered = email.lower()
+        if any(term in lowered for term in ("noreply", "no-reply", "example.com", "sentry.io")):
+            continue
+        context = description[max(0, match.start() - 100):match.end() + 100].lower()
+        local = lowered.split("@", 1)[0]
+        score = sum(2 for hint in hints if hint in local) + sum(1 for hint in hints if hint in context)
+        if score:
+            ranked.append((score, email))
+    return max(ranked, default=(0, None), key=lambda item: item[0])[1]
 
 
 def now() -> str:
@@ -161,6 +179,8 @@ def upsert_job(store: Store, job: dict) -> bool:
             "jobs", ats=ats, company_slug=slug, ats_job_id=ats_id):
         return False
     record = {key: job.get(key, default) for key, default in _JOB_DEFAULTS.items()}
+    if not record.get("hr_email") and record.get("description"):
+        record["hr_email"] = _extract_hr_email(str(record["description"]))
     record["remote"] = 1 if job.get("remote") else 0
     record["posted_at"] = _normalise_ts(job.get("posted_at"))
     record["fetched_at"] = now()
@@ -306,10 +326,11 @@ def applications_with_jobs(store: Store, since: str) -> list[dict]:
             continue
         job = store._find("jobs", id=app.get("job_id")) or {}
         out.append({
-            "updated_at": app.get("updated_at"), "status": app.get("status"),
+            "created_at": app.get("created_at"), "updated_at": app.get("updated_at"), "status": app.get("status"),
             "reason": app.get("reason"), "id": job.get("id"), "company": job.get("company"),
             "title": job.get("title"), "ats": job.get("ats"), "score": job.get("score"),
-            "url": job.get("url"),
+            "url": job.get("url"), "source": job.get("source"),
+            "hr_email": job.get("hr_email") or _extract_hr_email(str(job.get("description") or "")),
         })
     out.sort(key=lambda r: r.get("updated_at") or "")
     return out

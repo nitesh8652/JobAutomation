@@ -10,15 +10,14 @@ TARGETS = {
     "title_include": ["engineer", "developer"],
     "title_exclude": ["manager", "intern"],
     "remote_only": True,
-    "location_exclude": [r"\b(us|usa|united states)\b"],
-    "location_keep": r"\b(worldwide|anywhere|india)\b",
+    "location_policy": {"remote_countries": ["India"], "office_cities": ["Mumbai"]},
     "posted_within_days": 30,
     "limits": {"weekly_target": 5, "daily_cap": 2, "per_company_30d": 1, "delay_seconds": [0, 0]},
 }
 
 
 def job(**kw):
-    base = {"title": "Backend Engineer", "location": "Remote - Worldwide", "remote": 1,
+    base = {"title": "Backend Engineer", "location": "Remote - India", "remote": 1,
             "posted_at": datetime.now(timezone.utc).isoformat(), "company": "Acme"}
     base.update(kw)
     return base
@@ -28,9 +27,10 @@ def test_prefilter():
     assert prefilter(job(), TARGETS) is None
     assert prefilter(job(title="Engineering Manager"), TARGETS).startswith("title excluded")
     assert prefilter(job(title="Designer"), TARGETS) == "title not in include list"
-    assert prefilter(job(location="Remote - US"), TARGETS).startswith("location excluded")
-    assert prefilter(job(location="US or India"), TARGETS) is None
-    assert prefilter(job(location="Berlin", remote=0), TARGETS) == "not remote"
+    assert prefilter(job(location="Remote - US"), TARGETS).startswith("remote eligibility in India not confirmed")
+    assert prefilter(job(location="Remote - India"), TARGETS) is None
+    assert prefilter(job(location="Mumbai", remote=0), TARGETS) is None
+    assert prefilter(job(location="Berlin", remote=0), TARGETS).startswith("on-site/hybrid roles are limited to Mumbai")
     assert prefilter(job(posted_at="2020-01-01T00:00:00Z"), TARGETS) == "too old"
 
 

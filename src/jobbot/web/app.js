@@ -80,6 +80,7 @@ const state = {
   jobs: { status: "all", q: "", ats: "all", sort: "newest", limit: 100, offset: 0 },
   watchId: null,
   watchTimer: null,
+  agentTimer: null,
   activityTimer: null,
   openLogs: new Set(),
   drawerJob: null,
@@ -91,14 +92,14 @@ const VIEW_META = {
   jobs: ["Jobs", "Everything jobbot has found, scored and applied to"],
   review: ["Needs review", "Forms waiting for you: CAPTCHAs and open questions"],
   assist: ["Apply by hand", "Sites we don't automate, with a tailored cover letter"],
-  companies: ["Companies", "ATS boards jobbot watches for new listings"],
   "skill-gaps": ["Skill Gaps", "Skills most demanded by jobs vs what your resume shows"],
+  applied: ["Applied", "Application history with company and HR contact details"],
   activity: ["Activity", "Runs, output and errors"],
   settings: ["Settings", "Profile, targets, limits and paths"],
 };
 
 function currentView() {
-  const m = location.hash.match(/^#\/(\w+)/);
+  const m = location.hash.match(/^#\/([\w-]+)/);
   return m && VIEW_META[m[1]] ? m[1] : "dashboard";
 }
 
@@ -110,6 +111,7 @@ function navigate(view) {
 function applyView(view) {
   state.view = view;
   if (state.activityTimer) { clearInterval(state.activityTimer); state.activityTimer = null; }
+  if (state.agentTimer && view !== "dashboard") { clearInterval(state.agentTimer); state.agentTimer = null; }
   $$("#nav .nav-item").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
   const [title, sub] = VIEW_META[view];
   $("#view-title").textContent = title;
@@ -117,7 +119,8 @@ function applyView(view) {
   if (view !== "dashboard") $("#banner").innerHTML = "";
   const render = {
     dashboard: renderDashboard, jobs: renderJobs, review: renderReview,
-    assist: renderAssist, companies: renderCompanies, "skill-gaps": renderSkillGaps,
+    assist: renderAssist, "skill-gaps": renderSkillGaps,
+    applied: renderApplied,
     activity: renderActivity, settings: renderSettings,
   }[view];
   render().catch((err) => showError(err));
@@ -158,7 +161,6 @@ function renderNavCounts(s) {
   set("jobs", s.total_jobs);
   set("review", s.review_count);
   set("assist", s.assist_count);
-  set("companies", s.companies_active);
   const running = (s.tasks || []).filter((t) => t.status === "running" || t.status === "queued").length;
   set("running", running);
 }
@@ -195,7 +197,7 @@ function setupBanner(s) {
 }
 
 async function renderDashboard() {
-  const [s, tasks] = await Promise.all([api("/api/summary"), api("/api/tasks?limit=6")]);
+  const [s, tasks, agent] = await Promise.all([api("/api/summary"), api("/api/tasks?limit=6"), api("/api/agent")]);
   state.summary = s;
   renderNavCounts(s);
   renderMiniQuota(s);
@@ -228,7 +230,7 @@ async function renderDashboard() {
         <span class="k">Applied this week</span>
         <span class="v">${s.week_applied} <small>/ ${lim.weekly_target}</small></span>
         <div class="progress ${weekPct >= 100 ? "bad" : weekPct >= 80 ? "warn" : ""}"><i style="width:${weekPct}%"></i></div>
-        <span class="d">${Math.max(0, lim.weekly_target - s.week_applied)} to weekly target</span>
+        <span class="d">${s.pending_verification || 0} pending verification · ${s.budget} remaining capacity</span>
       </div>
       <div class="card stat">
         <span class="k">Attempts today</span>
@@ -248,16 +250,17 @@ async function renderDashboard() {
       </div>
     </div>
 
+    ${renderAgentCard(agent)}
+
     <div class="grid two">
       <div class="card">
         <div class="card-head"><div><h2>Run the pipeline</h2><div class="sub">Each step is rate-limited and recorded.</div></div></div>
         <div class="row">
-          <button class="btn" data-task="fetch" data-label="Fetch new jobs">Fetch jobs</button>
           <button class="btn ghost" data-task="match" data-label="Score new jobs">Score new jobs</button>
           <button class="btn ghost" data-task="apply_dry" data-params='{"limit":3}' data-label="Dry-run applications">Dry-run 3 forms</button>
-          <button class="btn ghost" data-task="apply" data-label="Apply to matched jobs" data-confirm="Submit applications automatically within today's limits?">Apply</button>
+          <button class="btn ghost" data-task="apply" data-label="Apply to matched jobs" data-confirm="Submit applications automatically within today's limits?" ${agent.auto_submit_authorized === true ? "" : "disabled"}>Apply</button>
           <button class="btn ghost" data-task="report" data-label="Export weekly report">Weekly report</button>
-          <button class="btn subtle" data-task="run_daily" data-label="Run daily pipeline" data-confirm="Run fetch + match + apply now?">Run daily</button>
+          <button class="btn subtle" data-task="run_daily" data-label="Run daily pipeline" data-confirm="Fetch and match jobs now? Live submission runs only if separately authorized in targets.yaml.">Run daily</button>
         </div>
         <div class="card-foot">
           <div class="section-title"><h2>Pipeline</h2><span class="sub">${s.total_jobs} job(s) tracked</span></div>
@@ -274,6 +277,78 @@ async function renderDashboard() {
         </div>
       </div>
     </div>`;
+  if (state.agentTimer) clearInterval(state.agentTimer);
+  const applyButton = $("btn-quick-apply");
+  if (applyButton) {
+    applyButton.disabled = agent.auto_submit_authorized !== true;
+    applyButton.title = agent.auto_submit_authorized === true
+      ? "Submit supported ATS applications within configured limits"
+      : "Enable automation.auto_submit_authorized in targets.yaml after reviewing dry runs";
+  }
+  state.agentTimer = setInterval(async () => {
+    if (state.view !== "dashboard") return;
+    const current = await api("/api/agent").catch(() => null);
+    if (current) updateAgentCard(current);
+  }, 1500);
+}
+
+function renderAgentCard(agent) {
+  const logs = (agent.logs || []).slice(-5).map(esc).join("\n");
+  const tabs = (agent.tabs || []).map((tab) => `${tab.site}: ${tab.company} · ${tab.title} — ${tab.state}`).join("\n");
+  const mode = agent.auto_submit_authorized === true ? "Live submission enabled for supported ATS forms" : "Dry-run mode: forms are filled but not submitted";
+  const roles = agent.target_roles || [];
+  const setupNote = agent.setup_error ? `Setup required: ${agent.setup_error}` : "";
+  return `<div class="card agent-dashboard">
+    <div class="card-head"><div><h2>Browser agent</h2><span class="sub">Separate visible Chrome profile; bounded to ${agent.max_browser_tabs || 6} tabs.</span></div>
+      <span class="badge ${agent.state === "running" ? "info" : agent.state === "failed" ? "bad" : ""}" id="agent-state">${esc(agent.state || "idle")}</span></div>
+    <p class="agent-stage" id="agent-stage">${esc(setupNote || `${agent.stage || "idle"} · ${mode}`)}</p>
+    <label class="agent-role-label" for="agent-role">Target role</label>
+    <select id="agent-role" class="input" ${agent.setup_error ? "disabled" : ""}>
+      ${roles.map((role) => `<option value="${esc(role)}">${esc(role)}</option>`).join("")}
+    </select>
+    <div class="agent-controls">
+      <button class="btn" data-agent="start" ${agent.setup_error ? "disabled" : ""}>Start Applying</button>
+      <button class="btn ghost" data-agent="pause">Pause</button>
+      <button class="btn ghost" data-agent="resume">Resume</button>
+      <button class="btn ghost" data-agent="stop">Stop</button>
+      <button class="btn danger" data-agent="emergency-stop">Emergency stop</button>
+    </div>
+    <p class="agent-tabs" id="agent-tabs">${esc(tabs || "Current application tab: idle.")}</p>
+    <pre class="agent-log" id="agent-log">${logs || "Agent activity will appear here."}</pre>
+    <p class="note">Use the extension to open job-board searches; you operate those pages. Live submission requires <code>automation.auto_submit_authorized: true</code> in targets.yaml.</p>
+  </div>`;
+}
+
+function updateAgentCard(agent) {
+  const stateEl = $("#agent-state"), stageEl = $("#agent-stage"), logEl = $("#agent-log");
+  if (!stateEl || !stageEl || !logEl) return;
+  stateEl.textContent = agent.state || "idle";
+  stateEl.className = `badge ${agent.state === "running" ? "info" : agent.state === "failed" ? "bad" : ""}`;
+  stageEl.textContent = agent.setup_error ? `Setup required: ${agent.setup_error}`
+    : `${agent.stage || "idle"} · ${agent.auto_submit_authorized === true ? "Live submit enabled for supported ATS forms" : "Dry-run only; no forms are submitted"}`;
+  logEl.textContent = (agent.logs || []).slice(-5).join("\n") || "Agent activity will appear here.";
+  const tabsEl = $("agent-tabs");
+  if (tabsEl) tabsEl.textContent = (agent.tabs || []).map((tab) => `${tab.site}: ${tab.company} · ${tab.title} — ${tab.state}`).join("\n") || "Current application tab: idle.";
+  const startButton = $('[data-agent="start"]');
+  if (startButton) startButton.disabled = Boolean(agent.setup_error);
+  const applyButton = $("btn-quick-apply");
+  if (applyButton) applyButton.disabled = agent.auto_submit_authorized !== true;
+  const pipelineApply = $('[data-task="apply"]');
+  if (pipelineApply) pipelineApply.disabled = agent.auto_submit_authorized !== true;
+}
+
+async function controlAgent(action) {
+  if (action === "start") {
+    const roles = await api("/api/roles");
+    const selectedRole = $("agent-role")?.value || (roles.selected || [])[0];
+    const data = await api("/api/agent/start", { method: "POST", body: { role: selectedRole } });
+    updateAgentCard(data);
+    toast("Browser agent started", data.auto_submit_authorized ? "Live submission is enabled by configuration." : "Running dry-run; forms will not be submitted.");
+    return;
+  }
+  const data = await api(`/api/agent/${action}`, { method: "POST", body: {} });
+  updateAgentCard(data);
+  toast("Browser agent", `${action.replaceAll("-", " ")} requested.`);
 }
 
 function taskRowMini(t) {
@@ -334,8 +409,7 @@ async function loadJobs() {
   if (!data.jobs.length) {
     $("#jobs-results").innerHTML = `<div class="empty"><div class="e-mark">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 4h4a2 2 0 0 1 2 2v1h3a2 2 0 0 1 2 2v2H3V9a2 2 0 0 1 2-2h3V6a2 2 0 0 1 2-2zm0 2v1h4V6z"/></svg></div>
-      <b>No jobs match</b><p>Try a different filter, or run a fetch to pull new listings.</p>
-      <button class="btn small" data-task="fetch" data-label="Fetch new jobs">Fetch jobs</button></div>`;
+      <b>No jobs match</b><p>Try a different filter, or use the Fetch jobs button at the top to check all enabled sources.</p></div>`;
     return;
   }
 
@@ -496,11 +570,15 @@ function assistCard(j) {
 async function renderSkillGaps() {
   $("#view").innerHTML = `<div class="empty"><b>Analysing jobs…</b></div>`;
   const data = await api("/api/skill-gaps");
-  const gaps = data.gaps || [];
+  const gaps = data.resume_available ? (data.gaps || []) : (data.top_skills || []);
   const present = data.present || [];
 
   function bar(pct, cls) {
     return `<div class="sg-bar"><i class="${cls}" style="width:${pct}%"></i><span>${pct}%</span></div>`;
+  }
+
+  function examples(items) {
+    return (items || []).map(j => `${esc(j.title)} @ ${esc(j.company)}`).join("<br>") || "—";
   }
 
   const gapRows = gaps.length
@@ -508,79 +586,65 @@ async function renderSkillGaps() {
         <td><b>${esc(s.skill)}</b></td>
         <td class="num">${s.jobs}</td>
         <td style="width:200px">${bar(s.pct, "gap")}</td>
-        <td><span class="badge dot bad">Missing</span></td>
+        <td>${examples(s.examples)}</td>
+        <td><span class="badge dot ${data.resume_available ? "bad" : "warn"}">${data.resume_available ? "Not in resume text" : "Add resume to compare"}</span></td>
       </tr>`).join("")
-    : `<tr><td colspan="4" class="note">No gaps found — great resume coverage!</td></tr>`;
+    : `<tr><td colspan="5" class="note">${data.total_jobs_analysed ? "No missing skills from the tracked set." : "No India/Mumbai eligible job descriptions yet. Fetch or track jobs first."}</td></tr>`;
 
   const presentRows = present.length
     ? present.map(s => `<tr>
         <td><b>${esc(s.skill)}</b></td>
         <td class="num">${s.jobs}</td>
         <td style="width:200px">${bar(s.pct, "ok")}</td>
+        <td>${examples(s.examples)}</td>
         <td><span class="badge dot good">In resume</span></td>
       </tr>`).join("")
-    : `<tr><td colspan="4" class="note">No matching skills found in resume yet.</td></tr>`;
+    : `<tr><td colspan="5" class="note">${data.resume_available ? "No matching skills found in your tracked job descriptions yet." : "Add your resume PDF and set its path in Settings to compare coverage."}</td></tr>`;
 
   $("#view").innerHTML = `
     <div class="note" style="margin-bottom:14px">Based on <b>${data.total_jobs_analysed}</b> jobs in your pipeline.
-      Skills are counted from job descriptions; resume coverage is checked against your PDF.
-      <br>Location rule: <b>Remote → anywhere in India</b> · <b>On-site → Mumbai only</b>.
-      Salary target: <b>25–35 LPA</b>.</div>
+      Skills are counted across eligible job descriptions and checked against your resume text.
+      ${data.resume_available ? "“Not in resume text” means the keyword was not found in the document; it does not prove you lack that skill. Add a skill only if it reflects your experience." : "Your resume text is not available, so these are the most requested skills only. Add a readable resume PDF to compare coverage."}</div>
     <div class="grid two">
       <div class="card">
-        <div class="card-head"><h2>⚠ Gaps — skills jobs want but your resume lacks</h2></div>
+        <div class="card-head"><h2>${data.resume_available ? "⚠ Often requested, not found in resume" : "Most requested skills"}</h2></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Skill</th><th>Jobs</th><th>Demand</th><th>Status</th></tr></thead>
+          <thead><tr><th>Skill</th><th>Jobs</th><th>Demand</th><th>Example roles</th><th>Status</th></tr></thead>
           <tbody>${gapRows}</tbody>
         </table></div>
       </div>
       <div class="card">
-        <div class="card-head"><h2>✓ Covered — skills in both jobs and your resume</h2></div>
+        <div class="card-head"><h2>Covered in both job descriptions and resume</h2></div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Skill</th><th>Jobs</th><th>Demand</th><th>Status</th></tr></thead>
+          <thead><tr><th>Skill</th><th>Jobs</th><th>Demand</th><th>Example roles</th><th>Status</th></tr></thead>
           <tbody>${presentRows}</tbody>
         </table></div>
       </div>
     </div>`;
 }
 
-/* --------------------------------------------------------------- companies */
-async function renderCompanies() {
-  const data = await api("/api/companies");
-  const rows = (data.companies || []).map((c) => `
-    <tr>
-      <td><div class="cell-title">${esc(c.name || c.slug)}</div><div class="cell-sub">${esc(c.ats)}:${esc(c.slug)}</div></td>
-      <td><span class="ats-tag">${esc(c.ats)}</span></td>
-      <td class="num">${c.open_jobs || 0}</td>
-      <td class="cell-sub cell-nowrap">${esc(relTime(c.last_fetched))}</td>
-      <td>${c.active === 1 ? `<span class="badge good dot">Watching</span>` : `<span class="badge">Paused</span>`}</td>
-      <td class="cell-sub cell-nowrap">${esc(relTime(c.added_at))}</td>
-    </tr>`).join("");
+/* ----------------------------------------------------------- applied jobs */
+async function renderApplied() {
+  $("#view").innerHTML = `<div class="empty"><b>Loading applications…</b></div>`;
+  const data = await api("/api/applied");
+  const rows = data.applications || [];
+  const tableRows = rows.map(r => `<tr>
+    <td>${esc((r.updated_at || "").replace("T", " ").slice(0, 16))}</td>
+    <td><b>${esc(r.company || "Unknown company")}</b></td>
+    <td>${esc(r.title || "")}</td>
+    <td>${r.hr_email ? `<a href="mailto:${esc(r.hr_email)}">${esc(r.hr_email)}</a>` : `<span class="muted">Not found</span>`}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td>${esc(r.source || r.ats || "Unavailable")}</td>
+    <td>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open</a>` : "—"}</td>
+  </tr>`).join("");
   $("#view").innerHTML = `
-    <div class="grid two">
-      <div class="card">
-        <div class="card-head"><h2>Add a company board</h2></div>
-        <form id="add-company-form" class="row" style="align-items:flex-end">
-          <div class="field grow"><label for="company-target">ATS, board or careers URL</label>
-            <input class="input" id="company-target" name="target" placeholder="greenhouse:acme or https://acme.com/careers" required></div>
-          <div class="field" style="width:180px"><label for="company-name">Display name</label>
-            <input class="input" id="company-name" name="name" placeholder="Acme"></div>
-          <button class="btn" type="submit">Add board</button>
-        </form>
-        <p class="note" style="margin:10px 0 0">jobbot finds the Greenhouse, Lever, Ashby or Workable board behind a careers page. It fetches that board on the next run.</p>
-      </div>
-      <div class="card">
-        <div class="card-head"><h2>Watch list</h2><span class="sub">${data.active} active · ${data.total} total</span></div>
-        <div class="row">
-          <button class="btn ghost" data-task="fetch" data-label="Fetch new jobs">Fetch boards now</button>
-          <button class="btn ghost" data-task="fetch" data-params='{"force":true}' data-label="Force fetch">Force refresh</button>
-        </div>
-        <p class="note" style="margin-top:10px">Boards are fetched at most once every 20 hours unless forced.</p>
-      </div>
-    </div>
-    ${data.total ? `<div class="table-wrap"><table>
-      <thead><tr><th>Company</th><th>ATS</th><th>Open jobs</th><th>Last fetched</th><th>Status</th><th>Added</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>` : emptyState("No companies yet", "Add a board above, or run a fetch so jobbot can discover boards from aggregator listings.")}`;
+    <div class="card">
+      <div class="card-head"><h2>Application history</h2><span class="muted">${rows.length} confirmed applications</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Applied / updated</th><th>Company</th><th>Role</th><th>HR email</th><th>Status</th><th>Source</th><th>Link</th></tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="7" class="note">Mark a job as applied after submitting it to add it here.</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
 }
 
 /* ---------------------------------------------------------------- activity */
@@ -657,11 +721,24 @@ async function loadLog(id, open = true) {
 
 /* ---------------------------------------------------------------- settings */
 async function renderSettings() {
-  const data = await api("/api/config");
+  const [data, roles] = await Promise.all([api("/api/config"), api("/api/roles")]);
   state.settings = data;
   const lim = data.limits;
   const file = data.files[state.settingsTab] || { content: "", exists: false };
+  const selectedRoles = new Set(roles.selected || []);
+  const roleOptions = (roles.options || []).map(role => `<label class="role-option">
+    <input type="checkbox" value="${esc(role)}" ${selectedRoles.has(role) ? "checked" : ""}>
+    <span>${esc(role)}</span></label>`).join("");
   $("#view").innerHTML = `
+    <div class="card role-card">
+      <div class="card-head"><div><h2>Target roles</h2><span class="sub">Selected roles guide job searches, filtering, and scoring across all enabled sources.</span></div></div>
+      <div class="role-options" id="role-options">${roleOptions}</div>
+      <div class="role-footer">
+        <div class="role-add"><input class="input" id="custom-role" maxlength="100" placeholder="Add another role">
+          <button class="btn ghost" data-action="add-role">Add role</button></div>
+        <button class="btn" data-action="save-roles">Save target roles</button>
+      </div>
+    </div>
     <div class="grid two">
       <div class="card">
         <div class="card-head"><h2>Setup checklist</h2></div>
@@ -729,6 +806,34 @@ function switchFileTab(name) {
   editor.value = file.content;
   editor.disabled = !file.exists;
   $("#editor-status").textContent = file.exists ? "Editing existing file" : "File does not exist yet — Initialize first";
+}
+
+function addCustomRole() {
+  const input = $("#custom-role");
+  const value = (input?.value || "").trim().slice(0, 100);
+  if (!value) return;
+  const options = $("#role-options");
+  const existing = $$('input[type="checkbox"]', options).find(el => el.value.toLowerCase() === value.toLowerCase());
+  if (existing) { existing.checked = true; input.value = ""; return; }
+  const label = document.createElement("label");
+  label.className = "role-option";
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.value = value;
+  checkbox.checked = true;
+  const text = document.createElement("span");
+  text.textContent = value;
+  label.append(checkbox, text);
+  options.append(label);
+  input.value = "";
+}
+
+async function saveTargetRoles() {
+  const roles = $$('input[type="checkbox"]', $("#role-options"))
+    .filter(el => el.checked).map(el => el.value);
+  const data = await api("/api/roles", { method: "POST", body: { roles } });
+  toast("Target roles saved", `${data.selected.length} role(s) will be used for fetching and matching.`);
+  await loadSummary();
 }
 
 /* --------------------------------------------------------------- task flow */
@@ -817,6 +922,12 @@ document.addEventListener("click", async (e) => {
   const filter = e.target.closest("[data-job-filter]");
   if (filter) { state.jobs.status = filter.dataset.jobFilter; state.jobs.offset = 0; loadJobs().catch(showError); return; }
 
+  const agentBtn = e.target.closest("[data-agent]");
+  if (agentBtn) {
+    controlAgent(agentBtn.dataset.agent).catch(err => toast("Agent action failed", err.message, "bad"));
+    return;
+  }
+
   const fileTab = e.target.closest("[data-file-tab]");
   if (fileTab) { switchFileTab(fileTab.dataset.fileTab); return; }
 
@@ -859,6 +970,8 @@ document.addEventListener("click", async (e) => {
       else if (a === "save-cover") { await saveCover(id); }
       else if (a === "reload-config") { state.settings = null; await renderSettings(); toast("Reloaded", "Configuration read from disk."); }
       else if (a === "save-config") { await saveConfig(); }
+      else if (a === "add-role") { addCustomRole(); }
+      else if (a === "save-roles") { await saveTargetRoles(); }
       else if (a === "copy-text") { await copyText(action.dataset.text || ""); }
     } catch (err) {
       toast("Action failed", err.message, "bad");
@@ -874,14 +987,6 @@ document.addEventListener("submit", async (e) => {
     for (const [k, v] of fd.entries()) if (String(v).trim()) params[k] = String(v).trim();
     closeModal();
     await startTask("add_job", params, "Track job URL");
-  }
-  if (e.target.id === "add-company-form") {
-    e.preventDefault();
-    const fd = new FormData(e.target);
-    const params = {};
-    for (const [k, v] of fd.entries()) if (String(v).trim()) params[k] = String(v).trim();
-    await startTask("add_company", params, "Add company board");
-    e.target.reset();
   }
 });
 

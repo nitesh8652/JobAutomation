@@ -466,6 +466,18 @@ tr:hover .cell-actions .btn, .cell-actions .btn:focus { opacity: 1; }
 .checklist li.todo .ck { border-color: var(--warn); }
 
 .settings-grid { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 16px; align-items: start; }
+.role-card { margin-bottom: 14px; }
+.role-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.role-option { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--ink-2); font-size: 13px; cursor: pointer; }
+.role-option input { accent-color: var(--accent); }
+.role-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; }
+.role-add { display: flex; align-items: center; gap: 8px; width: min(420px, 100%); }
+@media (max-width: 700px) { .role-footer { align-items: stretch; flex-direction: column; } .role-add { width: 100%; } }
+.agent-dashboard { margin: 0 0 14px; }
+.agent-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-stage { color: var(--ink-2); font-size: 13px; }
+.agent-tabs { margin: 6px 0 10px; color: var(--ink-2); font-size: 12px; white-space: pre-line; }
+.agent-log { max-height: 130px; overflow: auto; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--ink-2); white-space: pre-wrap; font: 11px/1.5 var(--mono); }
 .file-tabs { display: flex; flex-direction: column; gap: 4px; }
 .file-tab {
   text-align: left; padding: 10px 12px; border-radius: 9px; border: 1px solid transparent;

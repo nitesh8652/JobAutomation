@@ -7,12 +7,14 @@ import logging
 import webbrowser
 
 from . import config, db, tailor
+from .location import location_bucket
 
 log = logging.getLogger(__name__)
 
 
 def build(conn, limit: int = 30, open_browser: bool = True) -> str:
-    rows = db.assist_jobs(conn, limit)
+    rows = [r for r in db.assist_jobs(conn, 10000)
+            if location_bucket(r, config.targets())][:limit]
     cards = []
     for r in rows:
         job = dict(r)

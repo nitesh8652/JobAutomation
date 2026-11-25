@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Jobbot Search and Tracker",
+  "version": "0.2.1",
+  "description": "Start Jobbot's visible browser workflow, review job skills, and track applications.",
+  "permissions": ["activeTab", "scripting", "windows"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "action": {
+    "default_title": "Jobbot Search and Tracker",
+    "default_popup": "popup.html"
+  }
+}

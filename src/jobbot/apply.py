@@ -3,18 +3,35 @@ from __future__ import annotations
 
 import logging
 
-from . import db, scheduler
+from . import config, db, scheduler
 from .appliers import SUPPORTED, Applier, formfill, record
+from .location import location_rejection
 
 log = logging.getLogger(__name__)
 
 
 def _candidates(conn):
-    return db.matched_jobs(conn, SUPPORTED)
+    rows = db.matched_jobs(conn, SUPPORTED)
+    eligible = []
+    for row in rows:
+        reason = location_rejection(row, config.targets())
+        if reason:
+            db.set_job_status(conn, row["id"], "filtered", reason)
+            log.info("Skipping #%s outside location scope: %s", row["id"], reason)
+        else:
+            eligible.append(row)
+    conn.commit()
+    return eligible
 
 
-def run_auto(conn, limit: int | None = None, headless: bool | None = None) -> dict:
+def run_auto(conn, limit: int | None = None, headless: bool | None = None,
+             context=None, control=None) -> dict:
     stats = {"submitted": 0, "queued": 0, "failed": 0, "closed": 0, "skipped_company_limit": 0}
+    automation = config.targets().get("automation") or {}
+    if automation.get("auto_submit_authorized", False) is not True:
+        stats["blocked"] = "live submissions are disabled; authorize automation.auto_submit_authorized in targets.yaml"
+        log.warning(stats["blocked"])
+        return stats
     remaining = scheduler.budget(conn)
     if limit is not None:
         remaining = min(remaining, limit)
@@ -25,49 +42,87 @@ def run_auto(conn, limit: int | None = None, headless: bool | None = None) -> di
     if not jobs:
         return stats
     if headless is None:
-        headless = scheduler.limits()["headless"]
-    first = True
-    with Applier(headless=headless) as ap:
+        headless = False
+
+    def run(ap):
+        nonlocal remaining
+        first = True
         for row in jobs:
+            if control and not control.checkpoint("applying"):
+                break
             if remaining <= 0:
                 break
             job = dict(row)
             if not scheduler.company_allowed(conn, job["company"]):
                 stats["skipped_company_limit"] += 1
                 continue
-            if not first:
-                scheduler.pause()
+            if not first and not scheduler.pause(control=control):
+                break
             first = False
             log.info("Applying: #%s %s @ %s (%s)", job["id"], job["title"], job["company"], job["ats"])
-            out = ap.apply(conn, job, mode="auto")
+            out = ap.apply(conn, job, mode="auto", control=control)
             record(conn, job["id"], out)
             stats[out.status] = stats.get(out.status, 0) + 1
             log.info("  -> %s%s", out.status, f" ({out.reason})" if out.reason else "")
             if out.status in scheduler.COUNTS_AS_ATTEMPT:
                 remaining -= 1
+    if context is not None:
+        run(Applier(headless=False, context=context))
+    else:
+        with Applier(headless=headless) as ap:
+            run(ap)
     return stats
 
 
-def run_dry(conn, limit: int = 3, job_id: int | None = None) -> None:
+def run_dry(conn, limit: int = 3, job_id: int | None = None, context=None, control=None) -> dict:
     rows = ([db.get_job(conn, job_id)] if job_id else _candidates(conn)[:limit])
     rows = [r for r in rows if r]
+    eligible = []
+    for row in rows:
+        reason = location_rejection(row, config.targets())
+        if reason:
+            db.set_job_status(conn, row["id"], "filtered", reason)
+            log.info("Skipping #%s outside location scope: %s", row["id"], reason)
+        else:
+            eligible.append(row)
+    conn.commit()
+    rows = eligible
     if not rows:
         print("No matched jobs to try. Run `jobbot fetch` and `jobbot match` first.")
-        return
-    with Applier(headless=False) as ap:
+        return {"dry_run": 0, "failed": 0, "closed": 0}
+    stats = {"dry_run": 0, "failed": 0, "closed": 0}
+
+    def run(ap):
         for row in rows:
+            if control and not control.checkpoint("dry_run"):
+                break
             job = dict(row)
-            out = ap.apply(conn, job, mode="dry")
+            out = ap.apply(conn, job, mode="dry", control=control)
+            stats[out.status] = stats.get(out.status, 0) + 1
             print(f"\n#{job['id']} {job['title']} @ {job['company']} [{job['ats']}]")
             print(f"  result     : {out.status} - {out.reason}")
             print(f"  screenshot : {out.screenshot}")
             for k, v in (out.answers.get("values") or {}).items():
                 label = (out.answers.get("labels") or {}).get(k, k)
                 print(f"    {label[:60]:<60} = {str(v)[:70]}")
+    if context is not None:
+        run(Applier(headless=False, context=context))
+    else:
+        with Applier(headless=False) as ap:
+            run(ap)
+    return stats
 
 
 def run_review(conn) -> None:
     rows = db.review_jobs(conn)
+    eligible = []
+    for row in rows:
+        reason = location_rejection(row, config.targets())
+        if reason:
+            print(f"Skipping out-of-scope review job #{row['id']}: {reason}")
+        else:
+            eligible.append(row)
+    rows = eligible
     if not rows:
         print("Review queue is empty.")
         return

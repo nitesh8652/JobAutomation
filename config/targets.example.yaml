@@ -4,17 +4,17 @@
 # A job title must contain at least one include term and none of the exclude terms (case-insensitive).
 title_include: [engineer, developer, "software", backend, frontend, "full stack", fullstack, python, devops, sre, data,
                 "ai engineer", "applied ai", "machine learning", "ml engineer", genai, llm]
+target_roles: ["Software Engineer", "Backend Engineer", "Applied AI Engineer",
+               "Forward Deployed Engineer", "Full-Stack Web Developer",
+               "Automation Engineer", "Automation Specialist"]
 title_exclude: [senior staff, principal, director, "vp ", head of, manager, intern, sales, recruiter, "account executive"]
 
-remote_only: true
-# Regexes tested against the job's location text (case-insensitive).
-# Dropped if any `location_exclude` matches, UNLESS `location_keep` also matches.
-location_exclude:
-  - '\b(us|usa|u\.s\.|united states|canada|north america|mexico|brazil|latam)\b'
-  - '\b(uk|united kingdom|germany|france|spain|netherlands|poland|eu|europe|emea)\b'
-# If 300/week is still short, add Indian cities here, e.g.
-#   location_keep: '\b(worldwide|anywhere|global|india|apac|asia|bengaluru|bangalore|hyderabad|pune|mumbai|chennai|gurgaon|noida)\b'
-location_keep: '\b(worldwide|anywhere|global|india|apac|asia)\b'
+# Remote roles must explicitly allow applicants in India. On-site and hybrid roles
+# are limited to Mumbai. Unknown/global locations are excluded.
+remote_only: false
+location_policy:
+  remote_countries: [India]
+  office_cities: [Mumbai]
 posted_within_days: 21
 
 # ---- AI scoring / writing (OpenAI) ----------------------------------------
@@ -36,34 +36,41 @@ limits:
 #   auto_apply_ats: [greenhouse, lever, ashby, workable, recruitee, personio]
 auto_apply_ats: [greenhouse, lever, ashby, workable]
 
+# Browser agent starts in dry-run mode. Set auto_submit_authorized to true only
+# after reviewing dry-run forms and confirming the supported-ATS submission policy.
+automation:
+  auto_submit_authorized: false
+  max_browser_tabs: 6
+  max_concurrent_submissions: 1
+
 # ---- Job sources ------------------------------------------------------------
 remotive:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   categories: [software-dev,AI Engineer]   # each category = 1 API call; Remotive asks for <= 4 calls/day
   min_hours_between_fetches: 12
 arbeitnow:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   max_pages: 3
   remote_only: true
   min_hours_between_fetches: 6
 remoteok:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   min_hours_between_fetches: 6
 himalayas:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   limit: 100
   max_pages: 2
   min_hours_between_fetches: 12
 jobicy:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   count: 50
   geo: anywhere
   min_hours_between_fetches: 12
 weworkremotely:
-  enabled: true
+  enabled: false               # global feed; does not support India-only search
   min_hours_between_fetches: 6
 hn_hiring:
-  enabled: true
+  enabled: false               # global monthly thread; no reliable location filter
   max_items: 150
   min_hours_between_fetches: 168     # a new "Who is hiring" thread once a month
 adzuna:                              # free key: developer.adzuna.com -> ADZUNA_APP_ID / ADZUNA_APP_KEY in .env
@@ -80,24 +87,24 @@ jooble:                              # free key: jooble.org/api/about -> JOOBLE_
   location: India
   min_hours_between_fetches: 24
 hiringcafe:                          # browser scrape - Playwright required
-  enabled: true
+  enabled: false               # broad feed; use the browser extension's manual search link
   keywords: [software engineer, backend engineer, python developer]
   max_jobs: 100
   headless: true
   min_hours_between_fetches: 12
 wellfound:                           # browser scrape - Playwright required
-  enabled: true
+  enabled: false               # use the browser extension; platform terms restrict harvesting
   roles: [software-engineer, backend-engineer, full-stack-engineer]
   max_jobs: 100
   headless: true
   min_hours_between_fetches: 12
 ycombinator:                         # Work at a Startup - browser scrape - Playwright required
-  enabled: true
+  enabled: false               # global feed; use the browser extension's manual search link
   max_jobs: 100
   headless: true
   min_hours_between_fetches: 24
 ziprecruiter:                        # browser scrape - Playwright required
-  enabled: true
+  enabled: false               # not an India-focused source
   keywords: [software engineer, python developer, backend engineer]
   max_jobs: 100
   headless: true
